@@ -5,8 +5,8 @@ import time
 # --- Configuration ---
 # Your network IPs
 HOST_IP = "192.168.80.1"
-VICTIM_IP = "192.168.80.128"
-ATTACKER_IP = "192.168.80.129"
+VICTIM_IP = "192.168.23.131"
+ATTACKER_IP = "192.168.23.132"
 
 # --- Detection Parameters ---
 # A port scan is defined as: [PORT_SCAN_THRESHOLD] SYN packets to
