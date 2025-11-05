@@ -109,6 +109,46 @@ def get_alerts():
     except Exception as e:
         print(f"Error fetching alerts: {e}")
         return jsonify({"error": "Failed to fetch alerts"}), 500
+    
+@app.route("/api/allowlist", methods=['POST'])
+def add_to_allowlist():
+    """Adds a new IP to the allowlist."""
+    data = request.get_json()
+    if not data or 'ip_address' not in data:
+        return jsonify({"error": "Invalid request: 'ip_address' is required"}), 400
+
+    ip_addr = data['ip_address']
+    description = data.get('description', '')
+
+    # Check if it already exists
+    existing = AllowlistedIP.query.filter_by(ip_address=ip_addr).first()
+    if existing:
+        return jsonify({"message": f"IP {ip_addr} is already on the allowlist"}), 200
+
+    try:
+        new_ip = AllowlistedIP(ip_address=ip_addr, description=description)
+        db.session.add(new_ip)
+        db.session.commit()
+        print(f"Added {ip_addr} to allowlist.")
+        return jsonify(ip_address=new_ip.ip_address, description=new_ip.description), 201
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error adding to allowlist: {e}")
+        return jsonify({"error": "Database error"}), 500
+
+@app.route("/api/allowlist", methods=['GET'])
+def get_allowlist():
+    """Sends a simple list of all allowlisted IP addresses."""
+    try:
+        ips = AllowlistedIP.query.all()
+        # Send just a flat list of IP strings
+        ip_list = [ip.ip_address for ip in ips]
+        return jsonify(ip_list)
+    except Exception as e:
+        print(f"Error fetching allowlist: {e}")
+        return jsonify({"error": "Database error"}), 500
+    
+
 # --- End API ---
 
 
