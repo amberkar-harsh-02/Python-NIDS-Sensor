@@ -27,11 +27,22 @@ class SecurityAlert(db.Model):
     timestamp = db.Column(db.String(50), nullable=False)
     alert_type = db.Column(db.String(100), nullable=False)
     source_ip = db.Column(db.String(50), nullable=True)
+    severity = db.Column(db.String(20), nullable=False, default='Medium')
+    geolocation = db.Column(db.String(100), nullable=True)
+    ip_reputation = db.Column(db.Text, nullable=True)
+
     details = db.Column(db.Text, nullable=True)
 
     def __repr__(self):
         return f'<Alert {self.id} | {self.alert_type}>'
-# --- End Model ---
+class AllowedlistedIP(db.Model):
+    __tablename__ = 'allowlisted_ips'
+    id = db.Column(db.String(50), primary_key=True, nullable = False, unique =True)
+    ip_address = db.Column(db.String(50), nullable=True)
+
+    def __repr__(self):
+        return f'<AllowedlistedIP {self.ip_address}>'
+# --- End Models ---
 
 
 # --- API Endpoints ---
