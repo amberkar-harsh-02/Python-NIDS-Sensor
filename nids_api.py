@@ -1,171 +1,257 @@
-from flask import Flask, request, jsonify, render_template
-from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-from flask_socketio import SocketIO
+import requests
 import json
-import pytz
-from datetime import datetime
-import os
+from scapy.all import sniff, TCP, IP, UDP
+from collections import defaultdict
+import time
+from threading import Thread
+import socket
+import sys # Import sys to get executable path
+import traceback # Import traceback for error logging
 
-# --- Initialize App and Extensions ---
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+# --- Configuration ---
+# IPs for your virtual network
+HOST_IP = "192.168.23.1"
+VICTIM_IP = "192.168.23.131"
+ATTACKER_IP = "192.168.23.132"
 
-# --- Database Configuration ---
-# Point to your *new* nids_db
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Harsh%408866@localhost:8866/nids_db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# URL of your NIDS Flask server's alert endpoint
+ALERT_API_URL = f"http://{HOST_IP}:5001/api/ingest_alert"
+ALLOWLIST_API_URL = f"http://{HOST_IP}:5001/api/allowlist"
 
-db = SQLAlchemy(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
-# --- End Configuration ---
+# Try to get the local IP, but fall back to the one we set
+try:
+    local_ip = socket.gethostbyname(socket.gethostname())
+except Exception:
+    local_ip = VICTIM_IP # Fallback
 
-# --- Database Model ---
-class SecurityAlert(db.Model):
-    __tablename__ = 'security_alerts'
-    id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.String(50), nullable=False)
-    alert_type = db.Column(db.String(100), nullable=False)
-    source_ip = db.Column(db.String(50), nullable=True)
-    severity = db.Column(db.String(20), nullable=False, default='Medium')
-    geolocation = db.Column(db.String(100), nullable=True)
-    ip_reputation = db.Column(db.Text, nullable=True)
+print(f"--- NIDS Sensor Service ---")
+print(f"Sensor IP identified as: {local_ip}")
+print(f"Monitoring traffic for destination: {VICTIM_IP}")
+print(f"Alerts will be sent to: {ALERT_API_URL}")
 
-    details = db.Column(db.Text, nullable=True)
+# --- Detection Parameters ---
+PORT_SCAN_THRESHOLD = 10  # 10 different ports
+TIME_WINDOW = 5           # within 5 seconds
 
-    def __repr__(self):
-        return f'<Alert {self.id} | {self.alert_type}>'
-class AllowedlistedIP(db.Model):
-    __tablename__ = 'allowlisted_ips'
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)    
-    ip_address = db.Column(db.String(50), nullable=True)
-    description = db.Column(db.String(200), nullable=True)
+# --- Global Data Structures ---
+potential_scans = defaultdict(lambda: {"ports": set(), "first_seen": time.time()})
+potential_udp_scans = defaultdict(lambda: {"ports": set(), "first_seen": time.time()})
+ALLOWLISTED_IPS = set() # For our new allowlist feature
 
-    def __repr__(self):
-        return f'<AllowlistedIP {self.ip_address}>'
-# --- End Models ---
+# --- Helper Functions ---
 
-
-# --- API Endpoints ---
-@app.route("/api/ingest_alert", methods=['POST'])
-def ingest_alert():
-    """Receives an alert from a sensor, stores it, and notifies clients."""
-    alert_data = request.get_json()
-    if not alert_data:
-        return jsonify({"error": "Invalid request: No data provided"}), 400
-
-    print(f"--- NIDS API: ALERT RECEIVED ---: {alert_data}")
-
+def fetch_allowlist():
+    """
+    Fetches the IP allowlist from the API server on startup.
+    """
+    global ALLOWLISTED_IPS
     try:
-        # Get current time in PDT
-        pacific_tz = pytz.timezone('America/Los_Angeles')
-        current_time_pdt = datetime.now(pacific_tz).isoformat(timespec='seconds')
+        print(f"Fetching allowlist from {ALLOWLIST_API_URL}...")
+        response = requests.get(ALLOWLIST_API_URL, timeout=5)
+        if response.status_code == 200:
+            ips = response.json()
+            ALLOWLISTED_IPS = set(ips)
+            print(f"Successfully fetched {len(ALLOWLISTED_IPS)} allowlisted IPs.")
+        else:
+            print(f"Warning: Could not fetch allowlist. Server responded with {response.status_code}")
+    except requests.exceptions.ConnectionError:
+        print(f"[ERROR] Connection Error: Could not connect to API at {ALLOWLIST_API_URL}")
+    except Exception as e:
+        print(f"An error occurred while fetching allowlist: {e}")
 
-        new_alert = SecurityAlert(
-            timestamp=current_time_pdt, # Use server time
-            alert_type=alert_data.get('alert_type', 'Unknown'),
-            source_ip=alert_data.get('source_ip', 'Unknown'),
-            details=json.dumps(alert_data.get('details', {}))
+def send_alert(alert_type, severity, source_ip, details):
+    """
+    Helper function to format and send an alert to the API.
+    """
+    try:
+        alert_payload = {
+            "alert_type": alert_type,
+            "severity": severity,
+            "source_ip": source_ip,
+            "details": details
+        }
+        response = requests.post(ALERT_API_URL, json=alert_payload, timeout=3)
+        if response.status_code == 201:
+            print(f"Successfully sent {alert_type} alert to dashboard.")
+        else:
+            print(f"Failed to send {alert_type} alert. Server responded with: {response.status_code}")
+    except Exception as e:
+        print(f"An error occurred while sending {alert_type} alert: {e}")
+
+# --- Scan Detection Logic ---
+
+def check_for_port_scan(attacker_ip, port):
+    """
+    Checks if a packet contributes to a TCP SYN port scan and sends an alert if it does.
+    """
+    global potential_scans
+    current_time = time.time()
+    
+    scan_data = potential_scans[attacker_ip]
+
+    if current_time - scan_data["first_seen"] > TIME_WINDOW:
+        scan_data["ports"] = {port}
+        scan_data["first_seen"] = current_time
+        return
+
+    scan_data["ports"].add(port)
+
+    if len(scan_data["ports"]) >= PORT_SCAN_THRESHOLD:
+        print("\n" + "="*40)
+        print("   !!! TCP PORT SCAN DETECTED !!!")
+        print(f"   Source IP: {attacker_ip}")
+        print(f"   Ports Scanned: {len(scan_data['ports'])}")
+        print("="*40 + "\n")
+        
+        # 1. Send the alert using our helper function
+        send_alert(
+            alert_type="TCP Port Scan",
+            severity="Medium",
+            source_ip=attacker_ip,
+            details={
+                "scanned_port_count": len(scan_data["ports"]),
+                "ports_sampled": list(scan_data["ports"])[:20]
+            }
         )
-        db.session.add(new_alert)
-        db.session.commit()
 
-        # Emit WebSocket message to all connected clients
-        socketio.emit('new_alert', {
-            'id': new_alert.id,
-            'timestamp': new_alert.timestamp,
-            'alert_type': new_alert.alert_type,
-            'source_ip': new_alert.source_ip,
-            'details': alert_data.get('details', {})
-        })
-        print(f"Stored alert and emitted 'new_alert' for {new_alert.source_ip}")
-        return jsonify({"message": "Alert received and stored"}), 201
+        # 2. Clear this IP's record
+        del potential_scans[attacker_ip]
 
-    except Exception as e:
-        db.session.rollback()
-        print(f"Error storing alert: {e}")
-        return jsonify({"error": "Database error occurred"}), 500
-
-@app.route("/api/get_alerts", methods=['GET'])
-def get_alerts():
-    """Fetches all stored security alerts from the database."""
-    alerts_list = []
-    try:
-        alerts = SecurityAlert.query.order_by(db.desc(SecurityAlert.timestamp)).all()
-        for alert in alerts:
-            details_dict = {}
-            try:
-                details_dict = json.loads(alert.details) if alert.details else {}
-            except json.JSONDecodeError:
-                details_dict = {"error": "invalid format"}
-
-            alerts_list.append({
-                'id': alert.id,
-                'timestamp': alert.timestamp,
-                'alert_type': alert.alert_type,
-                'source_ip': alert.source_ip,
-                'details': details_dict
-            })
-        return jsonify(alerts_list)
-    except Exception as e:
-        print(f"Error fetching alerts: {e}")
-        return jsonify({"error": "Failed to fetch alerts"}), 500
+def check_for_udp_scan(attacker_ip, port):
+    """
+    Checks if a packet contributes to a UDP port scan.
+    """
+    global potential_udp_scans
+    current_time = time.time()
     
-@app.route("/api/allowlist", methods=['POST'])
-def add_to_allowlist():
-    """Adds a new IP to the allowlist."""
-    data = request.get_json()
-    if not data or 'ip_address' not in data:
-        return jsonify({"error": "Invalid request: 'ip_address' is required"}), 400
+    scan_data = potential_udp_scans[attacker_ip]
 
-    ip_addr = data['ip_address']
-    description = data.get('description', '')
+    if current_time - scan_data["first_seen"] > TIME_WINDOW:
+        scan_data["ports"] = {port}
+        scan_data["first_seen"] = current_time
+        return
 
-    # Check if it already exists
-    existing = AllowedlistedIP.query.filter_by(ip_address=ip_addr).first()
-    if existing:
-        return jsonify({"message": f"IP {ip_addr} is already on the allowlist"}), 200
+    scan_data["ports"].add(port)
 
-    try:
-        new_ip = AllowedlistedIP(ip_address=ip_addr, description=description)
-        db.session.add(new_ip)
-        db.session.commit()
-        print(f"Added {ip_addr} to allowlist.")
-        return jsonify(ip_address=new_ip.ip_address, description=new_ip.description), 201
-    except Exception as e:
-        db.session.rollback()
-        print(f"Error adding to allowlist: {e}")
-        return jsonify({"error": "Database error"}), 500
+    if len(scan_data["ports"]) >= PORT_SCAN_THRESHOLD:
+        print("\n" + "="*40)
+        print("   !!! UDP PORT SCAN DETECTED !!!")
+        print(f"   Source IP: {attacker_ip}")
+        print(f"   Ports Scanned: {len(scan_data['ports'])}")
+        print("="*40 + "\n")
+        
+        send_alert(
+            alert_type="UDP Port Scan",
+            severity="Medium",
+            source_ip=attacker_ip,
+            details={
+                "scanned_port_count": len(scan_data["ports"]),
+                "ports_sampled": list(scan_data["ports"])[:20]
+            }
+        )
+        
+        del potential_udp_scans[attacker_ip]
 
-@app.route("/api/allowlist", methods=['GET'])
-def get_allowlist():
-    """Sends a simple list of all allowlisted IP addresses."""
-    try:
-        ips = AllowedlistedIP.query.all()
-        # Send just a flat list of IP strings
-        ip_list = [ip.ip_address for ip in ips]
-        return jsonify(ip_list)
-    except Exception as e:
-        print(f"Error fetching allowlist: {e}")
-        return jsonify({"error": "Database error"}), 500
+# --- Main Packet Handler ---
+
+def packet_sniffer_callback(packet):
+    """
+    This function is called by Scapy for every packet it sniffs.
+    """
+    if not packet.haslayer(IP):
+        return
+
+    source_ip = packet[IP].src
     
+    # Ignore allowlisted IPs
+    if source_ip in ALLOWLISTED_IPS:
+        return
 
-# --- End API ---
+    # --- Handle TCP Packets ---
+    if packet.haslayer(TCP):
+        tcp_flags = packet[TCP].flags
+        dest_ip = packet[IP].dst
+        
+        # Only analyze traffic TO our Victim VM
+        if dest_ip != VICTIM_IP:
+            return
+        
+        # 1. XMAS Scan Detection (FIN, PSH, URG)
+        if tcp_flags & 0x29 == 0x29: # 0x29 is 00101001 (URG, PSH, FIN)
+            print("\n" + "="*40)
+            print("   !!! XMAS SCAN DETECTED !!!")
+            print(f"   Source IP: {source_ip}")
+            print("="*40 + "\n")
+            send_alert(
+                alert_type="XMAS Scan",
+                severity="High",
+                source_ip=source_ip,
+                details={"destination_port": packet[TCP].dport, "flags": "FIN, PSH, URG"}
+            )
+            return # Don't check for other scans
 
+        # 2. NULL Scan Detection (No flags set)
+        if tcp_flags == 0x00:
+            print("\n" + "="*40)
+            print("   !!! NULL SCAN DETECTED !!!")
+            print(f"   Source IP: {source_ip}")
+            print("="*40 + "\n")
+            send_alert(
+                alert_type="NULL Scan",
+                severity="High",
+                source_ip=source_ip,
+                details={"destination_port": packet[TCP].dport, "flags": "None"}
+            )
+            return # Don't check for other scans
 
-# --- SocketIO Handlers ---
-@socketio.on('connect')
-def handle_connect():
-    print(f'NIDS API: Client connected: {request.sid}')
+        # 3. TCP Port Scan Detection (SYN packet)
+        if tcp_flags == 0x02: # SYN flag
+            if source_ip != VICTIM_IP and source_ip != HOST_IP:
+                check_for_port_scan(source_ip, packet[TCP].dport)
+        
+        return # Done with TCP
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    print(f'NIDS API: Client disconnected: {request.sid}')
-# --- End Handlers ---
+    # --- Handle UDP Packets ---
+    if packet.haslayer(UDP):
+        dest_ip = packet[IP].dst
 
+        # Only analyze traffic TO our Victim VM
+        if dest_ip != VICTIM_IP:
+            return
+        
+        # Ignore traffic from ourselves or the Host
+        if source_ip == VICTIM_IP or source_ip == HOST_IP:
+            return
 
-if __name__ == '__main__':
-    print("Starting NIDS Flask-SocketIO server...")
-    # Run on host='0.0.0.0' to be accessible from your VMs
-    # We use port 5001 to avoid conflicts with your *other* project (game-security-dashboard)
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)
+        # Check for UDP Scan
+        check_for_udp_scan(source_ip, packet[UDP].dport)
+        return
+
+# --- Sniffer Start ---
+
+def start_sniffer():
+    """
+    Starts the Scapy sniffer.
+    """
+    fetch_allowlist() # Fetch the allowlist on startup
+    
+    print(f"Starting network sniffer. Listening for all TCP and UDP traffic...")
+    print(f"Detection Threshold: {PORT_SCAN_THRESHOLD} ports in {TIME_WINDOW} seconds.")
+    print("NOTE: This script must be run with 'sudo' privileges.")
+    
+    try:
+        # We must specify the interface 'ens37'
+        # Filter is just 'tcp or udp'
+        sniff(iface="ens37", filter="tcp or udp", prn=packet_sniffer_callback, store=0)
+    except PermissionError:
+        print("\n[ERROR] Permission denied. Scapy requires root privileges.")
+        print("Please run this script again using 'sudo':")
+        print(f"sudo {sys.executable} nids_service.py") 
+    except Exception as e:
+        print(f"\nAn error occurred while starting the sniffer: {e}")
+        print("--- FULL TRACEBACK ---")
+        traceback.print_exc()
+        print("----------------------")
+
+if __name__ == "__main__":
+    start_sniffer()
