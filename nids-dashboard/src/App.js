@@ -51,6 +51,7 @@ function App() {
           <thead>
             <tr>
               <th>Timestamp</th>
+              <th>Severity</th> {/* <--- NEW COLUMN */}
               <th>Type</th>
               <th>Source IP</th>
               <th>Details (Port Count)</th>
@@ -58,11 +59,14 @@ function App() {
           </thead>
           <tbody>
             {securityAlerts.map(alert => (
-              <tr key={alert.id}>
+              // This row now has a dynamic class based on severity
+              <tr key={alert.id} className={`severity-${alert.severity || 'Medium'}`}>
                 <td>{new Date(alert.timestamp).toLocaleString()}</td>
+                <td>{alert.severity}</td> {/* <--- NEW DATA CELL */}
                 <td>{alert.alert_type}</td>
                 <td>{alert.source_ip}</td>
-                <td>{alert.details?.scanned_port_count || 'N/A'}</td>
+                {/* This line handles both Port Scan details and other alerts */}
+                <td>{alert.details?.scanned_port_count || alert.details?.destination_port || 'N/A'}</td>
               </tr>
             ))}
           </tbody>

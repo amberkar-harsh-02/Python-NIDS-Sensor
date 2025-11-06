@@ -41,3 +41,17 @@
 .alerts-table tr:hover {
   background-color: #f1f1f1;
 }
+
+/* --- NEW SEVERITY STYLING --- */
+.severity-Medium {
+  /* No special styling, this is the default */
+}
+
+.severity-High {
+  background-color: #ffebee !important; /* light red background */
+  font-weight: bold;
+}
+
+.severity-High:hover {
+  background-color: #ffcdd2 !important; /* darker red on hover */
+}
