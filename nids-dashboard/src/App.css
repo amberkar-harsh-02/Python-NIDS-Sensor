@@ -1,57 +1,68 @@
-.App {
-  text-align: center;
+body {
+  background-color: #121212; /* Dark background for the whole page */
+  color: #e0e0e0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
 }
 
+.App {
+  text-align: center;
+}
+
 .App-header {
-  background-color: #282c34;
+  background-color: #1e1e1e; /* Slightly lighter header */
   padding: 20px;
   color: white;
+  border-bottom: 2px solid #333;
 }
 
 .content {
   padding: 20px;
 }
 
+.content h2 {
+  color: white;
+}
+
+.content p {
+  color: #888; /* Lighter text for connection status */
+}
+
 .alerts-table {
   width: 90%;
   margin: 20px auto;
   border-collapse: collapse;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background-color: #1e1e1e; /* Dark background for the table */
 }
 
 .alerts-table th,
 .alerts-table td {
-  border: 1px solid #ddd;
+  border: 1px solid #333; /* Darker borders */
   padding: 12px 15px;
 }
 
 .alerts-table th {
-  background-color: #f4f4f4;
-  color: #333;
+  background-color: #252525; /* Dark header row */
+  color: #00b0ff; /* Accent color for headers */
   text-align: left;
 }
 
 .alerts-table tr:nth-child(even) {
-  background-color: #f9f9f9;
+  background-color: #242424; /* Slightly different row color for striping */
 }
 
 .alerts-table tr:hover {
-  background-color: #f1f1f1;
+  background-color: #2a2a2a;
 }
 
-/* --- NEW SEVERITY STYLING --- */
-.severity-Medium {
-  /* No special styling, this is the default */
-}
 
 .severity-High {
-  background-color: #ffebee !important; /* light red background */
-  font-weight: bold;
+  background-color: #4d2121 !important; /* Dark red background */
+  color: #ffcdd2; /* Light red text */
 }
 
 .severity-High:hover {
-  background-color: #ffcdd2 !important; /* darker red on hover */
+  background-color: #5f2a2a !important;
 }
