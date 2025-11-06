@@ -37,11 +37,12 @@ class SecurityAlert(db.Model):
         return f'<Alert {self.id} | {self.alert_type}>'
 class AllowedlistedIP(db.Model):
     __tablename__ = 'allowlisted_ips'
-    id = db.Column(db.String(50), primary_key=True, nullable = False, unique =True)
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)    
     ip_address = db.Column(db.String(50), nullable=True)
+    description = db.Column(db.String(200), nullable=True)
 
     def __repr__(self):
-        return f'<AllowedlistedIP {self.ip_address}>'
+        return f'<AllowlistedIP {self.ip_address}>'
 # --- End Models ---
 
 
@@ -121,12 +122,12 @@ def add_to_allowlist():
     description = data.get('description', '')
 
     # Check if it already exists
-    existing = AllowlistedIP.query.filter_by(ip_address=ip_addr).first()
+    existing = AllowedlistedIP.query.filter_by(ip_address=ip_addr).first()
     if existing:
         return jsonify({"message": f"IP {ip_addr} is already on the allowlist"}), 200
 
     try:
-        new_ip = AllowlistedIP(ip_address=ip_addr, description=description)
+        new_ip = AllowedlistedIP(ip_address=ip_addr, description=description)
         db.session.add(new_ip)
         db.session.commit()
         print(f"Added {ip_addr} to allowlist.")
@@ -140,7 +141,7 @@ def add_to_allowlist():
 def get_allowlist():
     """Sends a simple list of all allowlisted IP addresses."""
     try:
-        ips = AllowlistedIP.query.all()
+        ips = AllowedlistedIP.query.all()
         # Send just a flat list of IP strings
         ip_list = [ip.ip_address for ip in ips]
         return jsonify(ip_list)
